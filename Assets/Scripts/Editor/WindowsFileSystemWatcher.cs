@@ -30,18 +30,37 @@ namespace FastScriptReload.Editor
         public event RenamedEventHandler Renamed;
         public event ErrorEventHandler Error;
 
-        public string Path { get; set; }
         public NotifyFilters NotifyFilter { get; set; } = NotifyFilters.LastWrite | NotifyFilters.FileName | NotifyFilters.DirectoryName;
         public string Filter { get; set; } = "*.*";
         public bool IncludeSubdirectories { get; set; } = false;
+        
+        public string Path
+        {
+            get => this.path;
+            set
+            {
+                var changed = value != this.path;
+                this.path = value;
 
+                // Restart if the path changes.
+                if (changed && this.EnableRaisingEvents)
+                {
+                    this.EnableRaisingEvents = false;
+                    this.EnableRaisingEvents = true;
+                }
+            }
+        }
+
+        private string path;
         private InterruptibleHandle currentHandle;
+        private Task monitorTask;
         private Task eventsTask;
+        private bool disposed = false;
 
         public WindowsFileSystemWatcher()
         {
             // Prevents us from hanging domain reload in Unity.
-            AppDomain.CurrentDomain.DomainUnload += (_, _) => this.Dispose();
+            AppDomain.CurrentDomain.DomainUnload += this.HandleDomainUnload;
             this.eventsTask = Task.CompletedTask;
         }
 
@@ -53,6 +72,18 @@ namespace FastScriptReload.Editor
         public void Dispose()
         {
             this.EnableRaisingEvents = false;
+            AppDomain.CurrentDomain.DomainUnload -= this.HandleDomainUnload;
+            this.Changed = null;
+            this.Created = null;
+            this.Deleted = null;
+            this.Renamed = null;
+            this.Error = null;
+            this.disposed = true;
+        }
+
+        private void HandleDomainUnload(object sender, EventArgs e)
+        {
+            this.Dispose();
         }
 
 
@@ -63,14 +94,22 @@ namespace FastScriptReload.Editor
             {
                 if (value)
                 {
+                    if (this.disposed) throw new ObjectDisposedException(nameof(WindowsFileSystemWatcher));
                     if (this.currentHandle != null) return;
                     this.currentHandle = CreateDirectoryHandle(this.Path);
-                    Task.Factory.StartNew(() => this.Monitor(this.currentHandle), TaskCreationOptions.LongRunning);
+                    this.monitorTask = Task.Factory.StartNew(() => this.Monitor(this.currentHandle), TaskCreationOptions.LongRunning);
                 }
                 else
                 {
-                    this.currentHandle?.Close();
+                    // This cancels scheduled-but-unrun events, because they don't run if the handle is closed.
+                    this.currentHandle?.Dispose();
                     this.currentHandle = null;
+                    this.monitorTask?.Wait();
+                    this.monitorTask = null;
+                    // We don't wait for the events task, because we might be within the events task.
+                    // (Ooh, the events are coming from WITHIN THE TASK. Scary.)
+                    // This does leave a tiny chance that a single event could be triggered immediately after this,
+                    // if we're not in the events task...
                 }
             }
         }
@@ -168,6 +207,8 @@ namespace FastScriptReload.Editor
                         if (bufferPool.Count < MaxBufferPoolSize) bufferPool.Push(buffer);
                     }
                 });
+
+                handle.Dispose();
             }
 
 
@@ -241,7 +282,7 @@ namespace FastScriptReload.Editor
         }
 
 
-        private class InterruptibleHandle
+        private class InterruptibleHandle : IDisposable
         {
             public SafeFileHandle Handle { get; }
             public bool IsOpen => !this.closed & !this.Handle.IsInvalid & !this.Handle.IsClosed;
@@ -252,11 +293,11 @@ namespace FastScriptReload.Editor
                 this.Handle = handle;
             }
 
-            public unsafe void Close()
+            public unsafe void Dispose()
             {
                 this.closed = true;
                 if (!(this.Handle.IsInvalid | this.Handle.IsClosed)) CancelIoEx(this.Handle, null);
-                this.Handle.Close();
+                this.Handle.Dispose();
             }
 
             public static implicit operator SafeFileHandle(InterruptibleHandle handle)
