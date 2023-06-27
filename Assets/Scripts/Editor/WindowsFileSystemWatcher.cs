@@ -169,7 +169,7 @@ namespace FastScriptReload.Editor
                             lpBuffer: new HandleRef(buffer, (IntPtr)bufferPointer),
                             nBufferLength: buffer.Length,
                             bWatchSubtree: this.IncludeSubdirectories ? 1 : 0,
-                            dwNotifyFilter: (int)NotifyFilter,
+                            dwNotifyFilter: (int)this.NotifyFilter,
                             lpBytesReturned: out size,
                             overlappedPointer: null,
                             lpCompletionRoutine: new HandleRef(null, IntPtr.Zero)
@@ -207,9 +207,9 @@ namespace FastScriptReload.Editor
                         if (bufferPool.Count < MaxBufferPoolSize) bufferPool.Push(buffer);
                     }
                 });
-
-                handle.Dispose();
             }
+
+            handle.Dispose();
 
 
             void DispatchError(Exception ex)
